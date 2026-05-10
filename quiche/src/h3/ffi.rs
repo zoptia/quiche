@@ -148,6 +148,20 @@ pub extern "C" fn quiche_h3_event_type(ev: &h3::Event) -> u32 {
         h3::Event::Reset { .. } => 4,
 
         h3::Event::PriorityUpdate => 5,
+
+        h3::Event::WebTransportStream { .. } => 6,
+    }
+}
+
+/// Returns the WebTransport session id for a WebTransportStream event,
+/// or u64::MAX for any other event.
+#[no_mangle]
+pub extern "C" fn quiche_h3_event_webtransport_session_id(
+    ev: &h3::Event,
+) -> u64 {
+    match ev {
+        h3::Event::WebTransportStream { session_id } => *session_id,
+        _ => u64::MAX,
     }
 }
 

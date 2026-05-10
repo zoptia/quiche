@@ -2,3 +2,7 @@
 **/*.rs.bk
 **/Cargo.lock
 **/*.*qlog
+
+# Local staging dir consumed by zoptty's -Dquiche-prefix=... build.
+# Populated from cargo build outputs; do not commit the artifacts.
+zoptty-prefix/

@@ -1137,6 +1137,7 @@ enum quiche_h3_event_type {
     QUICHE_H3_EVENT_GOAWAY,
     QUICHE_H3_EVENT_RESET,
     QUICHE_H3_EVENT_PRIORITY_UPDATE,
+    QUICHE_H3_EVENT_WEBTRANSPORT_STREAM,
 };
 
 typedef struct quiche_h3_event quiche_h3_event;
@@ -1147,6 +1148,11 @@ int64_t quiche_h3_conn_poll(quiche_h3_conn *conn, quiche_conn *quic_conn,
 
 // Returns the type of the event.
 enum quiche_h3_event_type quiche_h3_event_type(quiche_h3_event *ev);
+
+// For QUICHE_H3_EVENT_WEBTRANSPORT_STREAM events, returns the WT
+// session id carried in the stream prefix. UINT64_MAX for any other
+// event type.
+uint64_t quiche_h3_event_webtransport_session_id(quiche_h3_event *ev);
 
 // Iterates over the headers in the event.
 //

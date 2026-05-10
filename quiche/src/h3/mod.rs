@@ -776,6 +776,16 @@ pub enum Event {
     /// [`Done`]: enum.Error.html#variant.Done
     Data,
 
+    /// A WebTransport data stream was opened by the peer (bidi 0x41 or
+    /// uni 0x54). The application should drive the stream via the
+    /// regular [`Connection::stream_recv`] / [`Connection::stream_send`]
+    /// APIs -- the H3 layer does not buffer or frame WT data.
+    WebTransportStream {
+        /// The session id (the CONNECT request's stream id) carried in
+        /// the WT_STREAM prefix.
+        session_id: u64,
+    },
+
     /// Stream was closed,
     Finished,
 
@@ -2679,6 +2689,17 @@ impl Connection {
                             // TODO: we MAY send STOP_SENDING
                         },
 
+                        // WT uni streams arrive here once the peer's
+                        // 0x54 prefix is parsed; nothing else to do at
+                        // type-set time. The session_id varint comes
+                        // next via the WtSessionId state.
+                        stream::Type::WebTransportUni => (),
+
+                        // WT bidi streams cannot reach this branch
+                        // because bidi streams skip the StreamType
+                        // state -- they are hijacked from set_frame_type
+                        // when the first frame type is 0x41.
+                        stream::Type::WebTransportBidi |
                         stream::Type::Request => unreachable!(),
                     }
                 },
@@ -2850,6 +2871,36 @@ impl Connection {
                             close_conn_critical_stream(conn)?;
                         }
                     }
+                },
+
+                stream::State::WtSessionId => {
+                    stream.try_fill_buffer(conn)?;
+
+                    let varint = match stream.try_consume_varint() {
+                        Ok(v) => v,
+
+                        Err(_) => continue,
+                    };
+
+                    if let Err(e) = stream.set_session_id(varint) {
+                        conn.close(true, e.to_wire(), b"")?;
+                        return Err(e);
+                    }
+
+                    if !polling {
+                        break;
+                    }
+
+                    return Ok((
+                        stream_id,
+                        Event::WebTransportStream { session_id: varint },
+                    ));
+                },
+
+                stream::State::WtData => {
+                    // Application drives stream_recv directly. The H3
+                    // layer doesn't buffer payload here -- nothing to do.
+                    break;
                 },
 
                 stream::State::Drain => {

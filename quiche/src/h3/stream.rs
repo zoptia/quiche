@@ -36,6 +36,13 @@ pub const HTTP3_PUSH_STREAM_TYPE_ID: u64 = 0x1;
 pub const QPACK_ENCODER_STREAM_TYPE_ID: u64 = 0x2;
 pub const QPACK_DECODER_STREAM_TYPE_ID: u64 = 0x3;
 
+// WebTransport stream type prefixes (draft-ietf-webtrans-http3 §4.2).
+// These appear at the start of a fresh QUIC stream and "hijack" it
+// from regular HTTP/3 framing: a WebTransport data stream is just a
+// session_id varint followed by raw application bytes.
+pub const WT_BIDI_STREAM_TYPE_ID: u64 = 0x41;
+pub const WT_UNI_STREAM_TYPE_ID: u64 = 0x54;
+
 const MAX_STATE_BUF_SIZE: usize = (1 << 24) - 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +52,10 @@ pub enum Type {
     Push,
     QpackEncoder,
     QpackDecoder,
+    /// A WebTransport bidi data stream (frame type prefix 0x41).
+    WebTransportBidi,
+    /// A WebTransport unidirectional data stream (prefix 0x54).
+    WebTransportUni,
     Unknown,
 }
 
@@ -57,6 +68,10 @@ impl Type {
             Type::Push => qlog::events::http3::StreamType::Push,
             Type::QpackEncoder => qlog::events::http3::StreamType::QpackEncode,
             Type::QpackDecoder => qlog::events::http3::StreamType::QpackDecode,
+            // qlog has no first-class WT category; report as Unknown so we
+            // don't fight a separate qlog-events crate bump just for this.
+            Type::WebTransportBidi | Type::WebTransportUni =>
+                qlog::events::http3::StreamType::Unknown,
             Type::Unknown => qlog::events::http3::StreamType::Unknown,
         }
     }
@@ -85,6 +100,15 @@ pub enum State {
     /// Reading a QPACK instruction.
     QpackInstruction,
 
+    /// Reading the WebTransport session_id varint that follows the
+    /// stream-type prefix (0x41 for bidi, 0x54 for uni).
+    WtSessionId,
+
+    /// WebTransport data passthrough. The state machine intentionally
+    /// stops parsing here -- bytes after the session_id are application
+    /// payload, exposed to the user via the regular stream_recv path.
+    WtData,
+
     /// Reading and discarding data.
     Drain,
 
@@ -99,6 +123,7 @@ impl Type {
             HTTP3_PUSH_STREAM_TYPE_ID => Ok(Type::Push),
             QPACK_ENCODER_STREAM_TYPE_ID => Ok(Type::QpackEncoder),
             QPACK_DECODER_STREAM_TYPE_ID => Ok(Type::QpackDecoder),
+            WT_UNI_STREAM_TYPE_ID => Ok(Type::WebTransportUni),
 
             _ => Ok(Type::Unknown),
         }
@@ -170,6 +195,10 @@ pub struct Stream {
 
     /// Whether a trailing HEADER field has been received.
     trailers_received: bool,
+
+    /// The WebTransport session id, captured from the varint after a
+    /// 0x41 or 0x54 stream-type prefix. `None` for non-WT streams.
+    session_id: Option<u64>,
 }
 
 impl Stream {
@@ -217,6 +246,8 @@ impl Stream {
 
             trailers_sent: false,
             trailers_received: false,
+
+            session_id: None,
         }
     }
 
@@ -245,6 +276,9 @@ impl Stream {
                 State::QpackInstruction
             },
 
+            Type::WebTransportBidi | Type::WebTransportUni =>
+                State::WtSessionId,
+
             Type::Unknown => State::Drain,
         };
 
@@ -267,6 +301,22 @@ impl Stream {
     /// Sets the frame type and transitions to the next state.
     pub fn set_frame_type(&mut self, ty: u64) -> Result<()> {
         assert_eq!(self.state, State::FrameType);
+
+        // WebTransport bidi hijack: a 0x41 frame type at the very start
+        // of a peer-initiated request stream is the WT_BIDI_STREAM
+        // prefix. Switch the stream over to the WT data path so we
+        // don't try to parse the session_id varint as a frame length.
+        if ty == WT_BIDI_STREAM_TYPE_ID
+            && matches!(self.ty, Some(Type::Request))
+            && !self.is_local
+            && !self.remote_initialized
+            && self.headers_received_count == 0
+            && !self.data_received
+        {
+            self.ty = Some(Type::WebTransportBidi);
+            self.state_transition(State::WtSessionId, 1, true)?;
+            return Ok(());
+        }
 
         // Only expect frames on Control, Request and Push streams.
         match self.ty {
@@ -397,6 +447,30 @@ impl Stream {
     // Returns the stream's current frame type, if any
     pub fn frame_type(&self) -> Option<u64> {
         self.frame_type
+    }
+
+    /// Whether this stream is a WebTransport data stream (bidi or uni).
+    pub fn is_wt(&self) -> bool {
+        matches!(
+            self.ty,
+            Some(Type::WebTransportBidi | Type::WebTransportUni)
+        )
+    }
+
+    /// The WT session id captured from the stream prefix, if any.
+    pub fn session_id(&self) -> Option<u64> {
+        self.session_id
+    }
+
+    /// Stores the WT session_id varint and switches to data passthrough.
+    pub fn set_session_id(&mut self, sid: u64) -> Result<()> {
+        assert_eq!(self.state, State::WtSessionId);
+        self.session_id = Some(sid);
+        self.remote_initialized = true;
+        // No state buffer needed in WtData -- payload bytes are exposed
+        // to the user via stream_recv directly.
+        self.state_transition(State::WtData, 0, false)?;
+        Ok(())
     }
 
     /// Sets the frame's payload length and transitions to the next state.
