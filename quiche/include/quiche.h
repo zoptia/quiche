@@ -1120,6 +1120,13 @@ void quiche_h3_config_set_qpack_blocked_streams(quiche_h3_config *config, uint64
 // Sets the `SETTINGS_ENABLE_CONNECT_PROTOCOL` setting.
 void quiche_h3_config_enable_extended_connect(quiche_h3_config *config, bool enabled);
 
+// Advertises WebTransport support to the peer by emitting
+// SETTINGS_WT_MAX_SESSIONS. Required before Chrome will send the
+// WebTransport CONNECT request. Returns 0 on success, negative on
+// error.
+int quiche_h3_config_enable_webtransport(quiche_h3_config *config,
+                                         uint64_t max_sessions);
+
 // Frees the HTTP/3 config object.
 void quiche_h3_config_free(quiche_h3_config *config);
 

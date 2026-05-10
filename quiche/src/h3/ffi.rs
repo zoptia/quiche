@@ -77,6 +77,28 @@ pub extern "C" fn quiche_h3_config_enable_extended_connect(
     config.enable_extended_connect(enabled);
 }
 
+/// Advertise WebTransport support to the peer by adding the
+/// SETTINGS_WT_MAX_SESSIONS H3 setting. Chrome silently aborts the
+/// WebTransport handshake unless this setting is present in the
+/// server's SETTINGS frame; quiche has no first-class WT knob so
+/// we splice it in via the additional-settings channel.
+///
+/// Returns 0 on success, a negative error code on failure (e.g. if
+/// additional_settings was already set with a conflicting key).
+#[no_mangle]
+pub extern "C" fn quiche_h3_config_enable_webtransport(
+    config: &mut h3::Config, max_sessions: u64,
+) -> c_int {
+    // 0x2B603742 = SETTINGS_WT_MAX_SESSIONS (draft-ietf-webtrans-http3 §8.2,
+    // draft -02..-07). Newer drafts move to a different code point but
+    // shipping Chrome still uses this one as of 2026-Q2.
+    const WT_MAX_SESSIONS: u64 = 0x2B603742;
+    match config.set_additional_settings(vec![(WT_MAX_SESSIONS, max_sessions)]) {
+        Ok(_) => 0,
+        Err(e) => e.to_c() as c_int,
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn quiche_h3_config_free(config: *mut h3::Config) {
     drop(unsafe { Box::from_raw(config) });
